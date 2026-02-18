@@ -9,8 +9,9 @@ local TARGET_HITBOX_SIZE = Vector3.new(15, 15, 15)
 local currentHitboxSize = 15 -- Default size
 
 local activeNPCs = {}
-local originalSizes = {}
+local originalRootState = {}
 local isUnloaded = false
+local hitboxEnabled = true
 
 local patchOptions = { recoil = true, firemodes = false }
 
@@ -32,6 +33,10 @@ local function getRootPart(model)
     return model:FindFirstChild("Root") or model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("UpperTorso")
 end
 
+local function getHumanoid(model)
+    return model:FindFirstChildOfClass("Humanoid")
+end
+
 local function hasAIChild(model)
     for _, c in ipairs(model:GetChildren()) do
         if type(c.Name) == "string" and c.Name:sub(1, 3) == "AI_" then return true end
@@ -39,52 +44,77 @@ local function hasAIChild(model)
     return false
 end
 
-local function applySilentHitbox(model, root)
-    if not root then return end
-    
-    if not originalSizes[model] then 
-        originalSizes[model] = root.Size 
+local function restoreOriginalSize(model)
+    local root = getRootPart(model)
+    local original = originalRootState[model]
+
+    if root and original then
+        root.Size = original.Size
+        root.Transparency = original.Transparency
+        root.CanCollide = original.CanCollide
     end
-    
-    local newSize = Vector3.new(currentHitboxSize, currentHitboxSize, currentHitboxSize)
-    root.Size = newSize
-    root.Transparency = 1
-    root.CanCollide = true
-    
-    for _, part in ipairs(model:GetDescendants()) do
-        if part:IsA("BasePart") and part ~= root then
-            part.Size = newSize
-            part.CanCollide = true
-        end
+
+    originalRootState[model] = nil
+end
+
+local function removeNPC(model)
+    if activeNPCs[model] then
+        restoreOriginalSize(model)
+        activeNPCs[model] = nil
     end
 end
 
-local function restoreOriginalSize(model)
-    local root = getRootPart(model)
-    if root and originalSizes[model] then
-        root.Size = originalSizes[model]
-        root.Transparency = 1
-        root.CanCollide = false
+local function applySilentHitbox(model, root)
+    if not root then return end
+
+    local tracked = activeNPCs[model]
+    if not tracked then return end
+
+    local humanoid = tracked.humanoid
+    if humanoid and humanoid.Health <= 0 then
+        removeNPC(model)
+        return
     end
-    
-    for _, part in ipairs(model:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = false
-        end
+
+    if not originalRootState[model] then
+        originalRootState[model] = {
+            Size = root.Size,
+            Transparency = root.Transparency,
+            CanCollide = root.CanCollide,
+        }
     end
-    
-    originalSizes[model] = nil
+
+    local newSize = Vector3.new(currentHitboxSize, currentHitboxSize, currentHitboxSize)
+    root.Size = newSize
+    root.Transparency = 1
+    root.CanCollide = false
 end
 
 local function addNPC(model)
     if activeNPCs[model] or model.Name ~= "Male" or not hasAIChild(model) then return end
     local head = model:FindFirstChild("Head")
     local root = getRootPart(model)
+    local humanoid = getHumanoid(model)
     if not head or not root then return end
-    activeNPCs[model] = { head = head, root = root }
-    
-    applySilentHitbox(model, root)
-    
+
+    activeNPCs[model] = { head = head, root = root, humanoid = humanoid }
+
+    if humanoid then
+        humanoid.Died:Connect(function()
+            removeNPC(model)
+        end)
+    end
+
+    model.AncestryChanged:Connect(function(_, parent)
+        if parent == nil then
+            removeNPC(model)
+        end
+    end)
+
+    if hitboxEnabled then
+        applySilentHitbox(model, root)
+    end
+
     print("✅ NPC Added - Hitbox Expanded")
 end
 
@@ -93,7 +123,7 @@ local function patchWeapons(options)
         and RS.Shared:FindFirstChild("Configs")
         and RS.Shared.Configs:FindFirstChild("Weapon")
         and RS.Shared.Configs.Weapon:FindFirstChild("Weapons_Player")
-    
+
     if not weaponsFolder then return end
 
     for _, platform in pairs(weaponsFolder:GetChildren()) do
@@ -140,6 +170,7 @@ HitboxSection:AddToggle({
     Name = "Enable Hitbox Expander",
     Default = true,
     Callback = function(Value)
+        hitboxEnabled = Value
         if Value then
             print("✅ Hitbox Expander: ENABLED")
             for m, d in pairs(activeNPCs) do
@@ -168,9 +199,11 @@ HitboxSection:AddSlider({
         currentHitboxSize = Value
         print("📏 Hitbox Size: " .. Value)
         -- Update all active NPCs with new size
-        for m, d in pairs(activeNPCs) do
-            if d.root then
-                applySilentHitbox(m, d.root)
+        if hitboxEnabled then
+            for m, d in pairs(activeNPCs) do
+                if d.root then
+                    applySilentHitbox(m, d.root)
+                end
             end
         end
     end
@@ -219,11 +252,11 @@ MiscSection:AddButton({
     Name = "Unload Script",
     Callback = function()
         isUnloaded = true
-        for m, _ in pairs(activeNPCs) do 
-            restoreOriginalSize(m) 
+        for m, _ in pairs(activeNPCs) do
+            restoreOriginalSize(m)
         end
         activeNPCs = {}
-        originalSizes = {}
+        originalRootState = {}
         OrionLib:MakeNotification({
             Name = "Script Unloaded",
             Content = "Hitboxes restored to normal size",
@@ -241,25 +274,27 @@ print("✅ No Recoil: ENABLED")
 print("✅ Hitbox Expander: ENABLED")
 
 for _, m in ipairs(Workspace:GetChildren()) do
-    if m:IsA("Model") and m.Name == "Male" then 
-        if hasAIChild(m) then addNPC(m) end 
+    if m:IsA("Model") and m.Name == "Male" then
+        if hasAIChild(m) then addNPC(m) end
     end
 end
 
 Workspace.ChildAdded:Connect(function(m)
-    if m:IsA("Model") and m.Name == "Male" then 
-        task.delay(0.2, function() 
-            if hasAIChild(m) then addNPC(m) end 
-        end) 
+    if m:IsA("Model") and m.Name == "Male" then
+        task.delay(0.2, function()
+            if hasAIChild(m) then addNPC(m) end
+        end)
     end
 end)
 
 -- Main Loop
-RunService.RenderStepped:Connect(function()
-    if isUnloaded then return end
+RunService.Heartbeat:Connect(function()
+    if isUnloaded or not hitboxEnabled then return end
 
     for m, d in pairs(activeNPCs) do
-        if d.root then
+        if not m.Parent then
+            removeNPC(m)
+        elseif d.root then
             applySilentHitbox(m, d.root)
         end
     end
