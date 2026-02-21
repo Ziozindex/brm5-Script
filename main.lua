@@ -1,6 +1,5 @@
 -- =============================================
--- IMPROVED: NPC ESP + SILENT HITBOX + NO RECOIL
--- Cleaner & smarter hitbox logic (no more spam)
+-- NPC ESP + HITBOX + NO RECOIL
 -- =============================================
 
 local Workspace = game:GetService("Workspace")
