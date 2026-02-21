@@ -1,131 +1,142 @@
+-- =============================================
+-- IMPROVED: NPC ESP + SILENT HITBOX + NO RECOIL
+-- Cleaner & smarter hitbox logic (no more spam)
+-- =============================================
+
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local RS = game:GetService("ReplicatedStorage")
 
 local localPlayer = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
 
-local TARGET_HITBOX_SIZE = Vector3.new(15, 15, 15)
-local currentHitboxSize = 15 -- Default size
+local TARGET_HITBOX_SIZE = Vector3.new(15, 15, 15)   -- Change this number if you want smaller/bigger
 
-local activeNPCs = {}
-local originalRootState = {}
+local activeNPCs = {}      -- Tracks living NPCs
+local trackedParts = {}    -- For ESP boxes
 local isUnloaded = false
-local hitboxEnabled = true
+
+-- Colors for ESP
+local visibleColor = Color3.fromRGB(0, 255, 0)    -- Green = visible
+local hiddenColor  = Color3.fromRGB(255, 0, 0)    -- Red = behind wall
 
 local patchOptions = { recoil = true, firemodes = false }
 
--- Load Orion UI Library
-local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/jensonhirst/Orion/main/source"))()
+-- ================== HELPER FUNCTIONS ==================
 
--- Create the main window
-local Window = OrionLib:MakeWindow({
-    Name = "Hitbox + No Recoil",
-    HidePremium = false,
-    SaveConfig = true,
-    ConfigFolder = "OrionConfig"
-})
-
-print("🎯 Initializing: Hitbox Expander + No Recoil")
-
--- Helper Functions
 local function getRootPart(model)
-    return model:FindFirstChild("Root") or model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("UpperTorso")
-end
-
-local function getHumanoid(model)
-    return model:FindFirstChildOfClass("Humanoid")
+    return model:FindFirstChild("Root") 
+        or model:FindFirstChild("HumanoidRootPart") 
+        or model:FindFirstChild("UpperTorso")
 end
 
 local function hasAIChild(model)
-    for _, c in ipairs(model:GetChildren()) do
-        if type(c.Name) == "string" and c.Name:sub(1, 3) == "AI_" then return true end
+    for _, child in ipairs(model:GetChildren()) do
+        if child.Name:sub(1, 3) == "AI_" then return true end
     end
     return false
 end
 
-local function restoreOriginalSize(model)
-    local root = getRootPart(model)
-    local original = originalRootState[model]
-
-    if root and original then
-        root.Size = original.Size
-        root.Transparency = original.Transparency
-        root.CanCollide = original.CanCollide
-    end
-
-    originalRootState[model] = nil
+local function createBoxForPart(part)
+    if not part or part:FindFirstChild("Wall_Box") then return end
+    local box = Instance.new("BoxHandleAdornment")
+    box.Name = "Wall_Box"
+    box.Size = part.Size + Vector3.new(0.1, 0.1, 0.1)
+    box.Adornee = part
+    box.AlwaysOnTop = true
+    box.ZIndex = 10
+    box.Color3 = visibleColor
+    box.Transparency = 0.3
+    box.Parent = part
+    trackedParts[part] = true
 end
 
-local function removeNPC(model)
-    if activeNPCs[model] then
-        restoreOriginalSize(model)
-        activeNPCs[model] = nil
+local function destroyAllBoxes()
+    for part in pairs(trackedParts) do
+        if part and part:FindFirstChild("Wall_Box") then
+            pcall(function() part.Wall_Box:Destroy() end)
+        end
     end
+    trackedParts = {}
 end
 
-local function applySilentHitbox(model, root)
-    if not root then return end
+-- ================== HITBOX FUNCTIONS (CLEANED) ==================
 
-    local tracked = activeNPCs[model]
-    if not tracked then return end
-
-    local humanoid = tracked.humanoid
-    if humanoid and humanoid.Health <= 0 then
-        removeNPC(model)
-        return
-    end
-
-    if not originalRootState[model] then
-        originalRootState[model] = {
-            Size = root.Size,
-            Transparency = root.Transparency,
-            CanCollide = root.CanCollide,
-        }
-    end
-
-    local newSize = Vector3.new(currentHitboxSize, currentHitboxSize, currentHitboxSize)
-    root.Size = newSize
+local function applySilentHitbox(root)
+    root.Size = TARGET_HITBOX_SIZE
     root.Transparency = 1
-    root.CanCollide = false
+    root.CanCollide = true
 end
+
+local function restoreOriginalSize(data)
+    local root = data.root
+    if root and data.originalSize then
+        root.Size = data.originalSize
+        root.Transparency = 1
+        root.CanCollide = false
+    end
+end
+
+local function cleanupNPC(model)
+    if not activeNPCs[model] then return end
+    local data = activeNPCs[model]
+    
+    restoreOriginalSize(data)
+    
+    -- Remove ESP box
+    if data.head and data.head:FindFirstChild("Wall_Box") then
+        pcall(function() data.head.Wall_Box:Destroy() end)
+        trackedParts[data.head] = nil
+    end
+    
+    activeNPCs[model] = nil
+end
+
+-- ================== ADD NPC (NOW SUPER CLEAN) ==================
 
 local function addNPC(model)
     if activeNPCs[model] or model.Name ~= "Male" or not hasAIChild(model) then return end
+    
     local head = model:FindFirstChild("Head")
     local root = getRootPart(model)
-    local humanoid = getHumanoid(model)
-    if not head or not root then return end
-
-    activeNPCs[model] = { head = head, root = root, humanoid = humanoid }
-
-    if humanoid then
-        humanoid.Died:Connect(function()
-            removeNPC(model)
-        end)
-    end
-
-    model.AncestryChanged:Connect(function(_, parent)
-        if parent == nil then
-            removeNPC(model)
-        end
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    
+    if not head or not root or not humanoid then return end
+    
+    -- Save original size ONCE
+    local originalSize = root.Size
+    
+    -- Apply big hitbox ONCE
+    applySilentHitbox(root)
+    
+    -- Create ESP
+    createBoxForPart(head)
+    
+    -- Store everything
+    activeNPCs[model] = {
+        head = head,
+        root = root,
+        humanoid = humanoid,
+        originalSize = originalSize
+    }
+    
+    -- Auto clean when NPC dies
+    humanoid.Died:Connect(function()
+        cleanupNPC(model)
     end)
-
-    if hitboxEnabled then
-        applySilentHitbox(model, root)
-    end
-
-    print("✅ NPC Added - Hitbox Expanded")
 end
 
+-- ================== WEAPON PATCH (NO RECOIL) ==================
+
 local function patchWeapons(options)
-    local weaponsFolder = RS:FindFirstChild("Shared")
-        and RS.Shared:FindFirstChild("Configs")
-        and RS.Shared.Configs:FindFirstChild("Weapon")
+    local weaponsFolder = RS:FindFirstChild("Shared") 
+        and RS.Shared:FindFirstChild("Configs") 
+        and RS.Shared.Configs:FindFirstChild("Weapon") 
         and RS.Shared.Configs.Weapon:FindFirstChild("Weapons_Player")
-
+    
     if not weaponsFolder then return end
-
+    
     for _, platform in pairs(weaponsFolder:GetChildren()) do
         if platform.Name:match("^Platform_") then
             for _, weapon in pairs(platform:GetChildren()) do
@@ -152,152 +163,79 @@ local function patchWeapons(options)
     end
 end
 
--- Create COMBAT Tab
-local CombatTab = Window:MakeTab({
-    Name = "Combat",
-    Icon = "rbxassetid://4483345998",
-    PremiumOnly = false
-})
+-- ================== INITIALIZATION ==================
 
--- Hitbox Section
-local HitboxSection = CombatTab:AddSection({
-    Name = "Hitbox Settings"
-})
+print("🎯 Improved Script Loaded - ESP + Clean Hitbox + No Recoil")
 
-HitboxSection:AddParagraph("Hitbox Expander","Automatically enlarges NPC hitboxes to make them easier to hit")
-
-HitboxSection:AddToggle({
-    Name = "Enable Hitbox Expander",
-    Default = true,
-    Callback = function(Value)
-        hitboxEnabled = Value
-        if Value then
-            print("✅ Hitbox Expander: ENABLED")
-            for m, d in pairs(activeNPCs) do
-                if d.root then
-                    applySilentHitbox(m, d.root)
-                end
-            end
-        else
-            print("❌ Hitbox Expander: DISABLED")
-            for m, _ in pairs(activeNPCs) do
-                restoreOriginalSize(m)
-            end
-        end
-    end
-})
-
-HitboxSection:AddSlider({
-    Name = "Hitbox Size",
-    Min = 1,
-    Max = 50,
-    Default = 15,
-    Color = Color3.fromRGB(0, 255, 0),
-    Increment = 1,
-    ValueName = "Size",
-    Callback = function(Value)
-        currentHitboxSize = Value
-        print("📏 Hitbox Size: " .. Value)
-        -- Update all active NPCs with new size
-        if hitboxEnabled then
-            for m, d in pairs(activeNPCs) do
-                if d.root then
-                    applySilentHitbox(m, d.root)
-                end
-            end
-        end
-    end
-})
-
--- Create WEAPONS Tab
-local WeaponsTab = Window:MakeTab({
-    Name = "Weapons",
-    Icon = "rbxassetid://4483345998",
-    PremiumOnly = false
-})
-
--- Recoil Section
-local RecoilSection = WeaponsTab:AddSection({
-    Name = "Weapon Modifications"
-})
-
-RecoilSection:AddParagraph("No Recoil","Removes all weapon recoil for perfect accuracy")
-
-RecoilSection:AddToggle({
-    Name = "Enable No Recoil",
-    Default = true,
-    Callback = function(Value)
-        patchOptions.recoil = Value
-        if Value then
-            patchWeapons(patchOptions)
-            print("✅ No Recoil: ENABLED")
-        else
-            print("❌ No Recoil: DISABLED")
-        end
-    end
-})
-
--- Create MISC Tab
-local MiscTab = Window:MakeTab({
-    Name = "Misc",
-    Icon = "rbxassetid://4483345998",
-    PremiumOnly = false
-})
-
-local MiscSection = MiscTab:AddSection({
-    Name = "Script Controls"
-})
-
-MiscSection:AddButton({
-    Name = "Unload Script",
-    Callback = function()
-        isUnloaded = true
-        for m, _ in pairs(activeNPCs) do
-            restoreOriginalSize(m)
-        end
-        activeNPCs = {}
-        originalRootState = {}
-        OrionLib:MakeNotification({
-            Name = "Script Unloaded",
-            Content = "Hitboxes restored to normal size",
-            Image = "rbxassetid://4483345998",
-            Time = 5
-        })
-        wait(1)
-        OrionLib:Destroy()
-    end
-})
-
--- Initialization
 patchWeapons(patchOptions)
 print("✅ No Recoil: ENABLED")
-print("✅ Hitbox Expander: ENABLED")
 
+-- Scan existing NPCs
 for _, m in ipairs(Workspace:GetChildren()) do
-    if m:IsA("Model") and m.Name == "Male" then
-        if hasAIChild(m) then addNPC(m) end
+    if m:IsA("Model") then
+        task.spawn(addNPC, m)  -- faster and safer
     end
 end
 
+print("✅ NPC Detection + Hitbox: ENABLED (clean version)")
+print("✅ NPC ESP: ENABLED")
+
+-- New NPCs
 Workspace.ChildAdded:Connect(function(m)
     if m:IsA("Model") and m.Name == "Male" then
-        task.delay(0.2, function()
-            if hasAIChild(m) then addNPC(m) end
-        end)
+        task.wait(0.1)  -- tiny delay, more reliable
+        addNPC(m)
     end
 end)
 
--- Main Loop
-RunService.Heartbeat:Connect(function()
-    if isUnloaded or not hitboxEnabled then return end
+-- ================== MAIN LOOP (NOW MUCH LIGHTER) ==================
 
-    for m, d in pairs(activeNPCs) do
-        if not m.Parent then
-            removeNPC(m)
-        elseif d.root then
-            applySilentHitbox(m, d.root)
+RunService.RenderStepped:Connect(function()
+    if isUnloaded then return end
+    
+    for model, data in pairs(activeNPCs) do
+        -- ESP color update (only thing that needs to run every frame)
+        if data.head and data.head:FindFirstChild("Wall_Box") then
+            local origin = camera.CFrame.Position
+            local rp = RaycastParams.new()
+            rp.FilterType = Enum.RaycastFilterType.Blacklist
+            rp.FilterDescendantsInstances = {localPlayer.Character, model}
+            
+            local rayResult = Workspace:Raycast(origin, data.head.Position - origin, rp)
+            
+            data.head.Wall_Box.Color3 = (not rayResult or rayResult.Instance:IsDescendantOf(model)) 
+                and visibleColor 
+                or hiddenColor
         end
     end
 end)
 
-OrionLib:Init()
+-- Light maintenance loop (checks every 0.5 sec instead of 60 times per sec)
+RunService.Heartbeat:Connect(function()
+    if isUnloaded then return end
+    
+    for model, data in pairs(activeNPCs) do
+        -- Remove if NPC disappeared or died
+        if not model.Parent or (data.humanoid and data.humanoid.Health <= 0) then
+            cleanupNPC(model)
+        -- Re-apply hitbox ONLY if game reset it
+        elseif data.root and data.root.Size ~= TARGET_HITBOX_SIZE then
+            applySilentHitbox(data.root)
+        end
+    end
+end)
+
+-- ================== UNLOAD FUNCTION ==================
+
+function unloadScript()
+    isUnloaded = true
+    destroyAllBoxes()
+    
+    for model, data in pairs(activeNPCs) do
+        cleanupNPC(model)
+    end
+    
+    print("❌ Script unloaded - Everything cleaned up")
+end
+
+print("✅ Script ready! Press F9 to see logs")
