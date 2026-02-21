@@ -164,7 +164,7 @@ end
 
 -- ================== INITIALIZATION ==================
 
-print("🎯 Improved Script Loaded - ESP + Clean Hitbox + No Recoil")
+print("Script Loaded - ESP + Clean Hitbox + No Recoil")
 
 patchWeapons(patchOptions)
 print("✅ No Recoil: ENABLED")
@@ -176,7 +176,7 @@ for _, m in ipairs(Workspace:GetChildren()) do
     end
 end
 
-print("✅ NPC Detection + Hitbox: ENABLED (clean version)")
+print("✅ NPC Detection + Hitbox: ENABLED ")
 print("✅ NPC ESP: ENABLED")
 
 -- New NPCs
@@ -237,4 +237,4 @@ function unloadScript()
     print("❌ Script unloaded - Everything cleaned up")
 end
 
-print("✅ Script ready! Press F9 to see logs")
+print("✅ Script ready!")
