@@ -10,11 +10,12 @@ local RS = game:GetService("ReplicatedStorage")
 local localPlayer = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
-local TARGET_HITBOX_SIZE = Vector3.new(15, 15, 15)   -- Change this number if you want smaller/bigger
-local REAL_HEAD_HIDDEN   = "_Head"                   -- Real Head is renamed to this while bypass is active
+local TARGET_HITBOX_SIZE = Vector3.new(5, 5, 5)      -- Moderate size to stay under detection thresholds
+local REAL_HEAD_HIDDEN   = "HeadMesh"                 -- Blends in with typical Roblox mesh part names
 
 local activeNPCs = {}      -- Tracks living NPCs
 local trackedParts = {}    -- For ESP boxes
+local espFolder = nil      -- Folder in CoreGui to hold ESP adornments
 local isUnloaded = false
 
 -- Colors for ESP
@@ -22,6 +23,14 @@ local visibleColor = Color3.fromRGB(0, 255, 0)    -- Green = visible
 local hiddenColor  = Color3.fromRGB(255, 0, 0)    -- Red = behind wall
 
 local patchOptions = { recoil = true, firemodes = false }
+
+-- Set up ESP container inside CoreGui (not monitored by most anti-cheats)
+pcall(function()
+    local CoreGui = game:GetService("CoreGui")
+    espFolder = Instance.new("Folder")
+    espFolder.Name = "HighlightCache"
+    espFolder.Parent = CoreGui
+end)
 
 -- ================== HELPER FUNCTIONS ==================
 
@@ -39,41 +48,41 @@ local function hasAIChild(model)
 end
 
 local function createBoxForPart(part)
-    if not part or part:FindFirstChild("Wall_Box") then return end
-    local box = Instance.new("BoxHandleAdornment")
-    box.Name = "Wall_Box"
-    box.Size = part.Size + Vector3.new(0.1, 0.1, 0.1)
-    box.Adornee = part
-    box.AlwaysOnTop = true
-    box.ZIndex = 10
-    box.Color3 = visibleColor
-    box.Transparency = 0.3
-    box.Parent = part
-    trackedParts[part] = true
+    if not part or trackedParts[part] then return end
+    local ok, box = pcall(function()
+        local b = Instance.new("BoxHandleAdornment")
+        b.Name = "HighlightBox"
+        b.Size = part.Size + Vector3.new(0.1, 0.1, 0.1)
+        b.Adornee = part
+        b.AlwaysOnTop = true
+        b.ZIndex = 10
+        b.Color3 = visibleColor
+        b.Transparency = 0.3
+        -- Parent to CoreGui folder instead of the part itself (avoids in-model detection)
+        b.Parent = espFolder or part
+        return b
+    end)
+    if ok and box then
+        trackedParts[part] = box
+    end
 end
 
 local function destroyAllBoxes()
-    for part in pairs(trackedParts) do
-        if part and part:FindFirstChild("Wall_Box") then
-            pcall(function() part.Wall_Box:Destroy() end)
-        end
+    for part, box in pairs(trackedParts) do
+        pcall(function()
+            if typeof(box) == "Instance" then box:Destroy() end
+        end)
     end
     trackedParts = {}
+    pcall(function()
+        if espFolder then espFolder:ClearAllChildren() end
+    end)
 end
 
 -- ================== HITBOX FUNCTIONS (RENAME-SWAP BYPASS) ==================
 
--- How it works:
---   1. Rename the real Head to "_Head" so only ONE part named "Head" exists in the model.
---   2. Create a big invisible Part named "Head" welded to "_Head".
---   3. The game's raycast hits the big "Head" → hit.Name == "Head" → headshot damage registers.
---   4. On cleanup: destroy the fake "Head", rename "_Head" back to "Head".
---
--- Previous attempts that failed:
---   • Direct head.Size expansion           → instant ban (anti-cheat monitors native part sizes)
---   • Separate part named "SilentHitbox"   → no ban, but hits never registered (wrong name)
---   • Cloned head (two "Head" parts)       → confuses detection; shots hit the tiny original
---   • External Workspace part              → not inside the model; character lookup fails
+-- Renames real Head, creates a moderately-sized invisible "Head" welded to the original.
+-- Moderate size (5×5×5) avoids common part-size anti-cheat checks while still improving hit reg.
 
 local function applyBypassHitbox(model, realHead)
     -- Guard: already applied if the real head is already renamed
@@ -82,21 +91,23 @@ local function applyBypassHitbox(model, realHead)
     -- Step 1: hide the real Head from name lookups
     realHead.Name = REAL_HEAD_HIDDEN
 
-    -- Step 2: create ONE big part named "Head" so hit.Name == "Head" triggers headshot damage
-    local fakeHead = Instance.new("Part")
-    fakeHead.Name         = "Head"
-    fakeHead.Size         = TARGET_HITBOX_SIZE
-    fakeHead.CFrame       = realHead.CFrame
-    fakeHead.Transparency = 1
-    fakeHead.CanCollide   = false
-    fakeHead.Massless     = true     -- prevents physics mass from being added to the NPC
-    fakeHead.Anchored     = false
-    fakeHead.Parent       = model   -- must be inside the model for damage character lookup
+    -- Step 2: create ONE bigger part named "Head" so hit.Name == "Head" triggers headshot damage
+    pcall(function()
+        local fakeHead = Instance.new("Part")
+        fakeHead.Name         = "Head"
+        fakeHead.Size         = TARGET_HITBOX_SIZE
+        fakeHead.CFrame       = realHead.CFrame
+        fakeHead.Transparency = 1
+        fakeHead.CanCollide   = false
+        fakeHead.Massless     = true
+        fakeHead.Anchored     = false
+        fakeHead.Parent       = model
 
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0  = realHead
-    weld.Part1  = fakeHead
-    weld.Parent = fakeHead
+        local weld = Instance.new("WeldConstraint")
+        weld.Part0  = realHead
+        weld.Part1  = fakeHead
+        weld.Parent = fakeHead
+    end)
 end
 
 local function removeBypassHitbox(model, realHead)
@@ -119,9 +130,9 @@ local function cleanupNPC(model)
     
     removeBypassHitbox(model, data.head)
     
-    -- Remove ESP box (head may still be named "_Head" at this point, that's fine)
-    if data.head and data.head:FindFirstChild("Wall_Box") then
-        pcall(function() data.head.Wall_Box:Destroy() end)
+    -- Remove ESP box from CoreGui
+    if data.head and trackedParts[data.head] then
+        pcall(function() trackedParts[data.head]:Destroy() end)
         trackedParts[data.head] = nil
     end
     
@@ -133,25 +144,27 @@ end
 local function addNPC(model)
     if activeNPCs[model] or model.Name ~= "Male" or not hasAIChild(model) then return end
     
-    local realHead = model:FindFirstChild("Head")   -- grab ref before bypass renames it
+    local realHead = model:FindFirstChild("Head")
     local humanoid = model:FindFirstChildOfClass("Humanoid")
     
     if not realHead or not humanoid then return end
     
-    -- Apply rename-swap bypass: renames real Head → "_Head", creates big "Head" weld
+    -- Small random delay to avoid batch-detection patterns
+    task.wait(math.random() * 0.15)
+    
+    -- Apply rename-swap bypass
     applyBypassHitbox(model, realHead)
     
-    -- Create ESP on the real (now "_Head") part — stays accurate to visual head position
+    -- Create ESP on the real (now hidden) part
     createBoxForPart(realHead)
     
-    -- Store realHead reference (valid even after rename; Lua holds the Instance object)
     activeNPCs[model] = {
         head     = realHead,
         humanoid = humanoid,
     }
     
-    -- Auto clean when NPC dies
     humanoid.Died:Connect(function()
+        task.wait(math.random() * 0.1)
         cleanupNPC(model)
     end)
 end
@@ -171,20 +184,23 @@ local function patchWeapons(options)
             for _, weapon in pairs(platform:GetChildren()) do
                 for _, child in pairs(weapon:GetChildren()) do
                     if child:IsA("ModuleScript") and child.Name:match("^Receiver%.") then
-                        local success, receiver = pcall(require, child)
-                        if success and receiver and receiver.Config and receiver.Config.Tune then
-                            local tune = receiver.Config.Tune
-                            if options.recoil then
-                                tune.Recoil_X = 0
-                                tune.Recoil_Z = 0
-                                tune.RecoilForce_Tap = 0
-                                tune.RecoilForce_Impulse = 0
-                                tune.Recoil_Range = Vector2.zero
-                                tune.Recoil_Camera = 0
-                                tune.RecoilAccelDamp_Crouch = Vector3.new(1, 1, 1)
-                                tune.RecoilAccelDamp_Prone = Vector3.new(1, 1, 1)
+                        pcall(function()
+                            local receiver = require(child)
+                            if receiver and receiver.Config and receiver.Config.Tune then
+                                local tune = receiver.Config.Tune
+                                if options.recoil then
+                                    -- Use near-zero values instead of exact 0 to avoid flag
+                                    tune.Recoil_X = 0.001
+                                    tune.Recoil_Z = 0.001
+                                    tune.RecoilForce_Tap = 0.001
+                                    tune.RecoilForce_Impulse = 0.001
+                                    tune.Recoil_Range = Vector2.new(0.001, 0.002)
+                                    tune.Recoil_Camera = 0.001
+                                    tune.RecoilAccelDamp_Crouch = Vector3.new(0.999, 0.999, 0.999)
+                                    tune.RecoilAccelDamp_Prone = Vector3.new(0.999, 0.999, 0.999)
+                                end
                             end
-                        end
+                        end)
                     end
                 end
             end
@@ -194,25 +210,19 @@ end
 
 -- ================== INITIALIZATION ==================
 
-print("Script Loaded - ESP + Clean Hitbox + No Recoil")
-
 patchWeapons(patchOptions)
-print("✅ No Recoil: ENABLED")
 
--- Scan existing NPCs
+-- Scan existing NPCs with staggered delays
 for _, m in ipairs(Workspace:GetChildren()) do
     if m:IsA("Model") then
-        task.spawn(addNPC, m)  -- faster and safer
+        task.spawn(addNPC, m)
     end
 end
-
-print("✅ NPC Detection + Hitbox: ENABLED ")
-print("✅ NPC ESP: ENABLED")
 
 -- New NPCs
 Workspace.ChildAdded:Connect(function(m)
     if m:IsA("Model") and m.Name == "Male" then
-        task.wait(0.1)  -- tiny delay, more reliable
+        task.wait(0.1 + math.random() * 0.05)
         addNPC(m)
     end
 end)
@@ -224,17 +234,20 @@ RunService.RenderStepped:Connect(function()
     
     for model, data in pairs(activeNPCs) do
         -- ESP color update (only thing that needs to run every frame)
-        if data.head and data.head:FindFirstChild("Wall_Box") then
-            local origin = camera.CFrame.Position
-            local rp = RaycastParams.new()
-            rp.FilterType = Enum.RaycastFilterType.Blacklist
-            rp.FilterDescendantsInstances = {localPlayer.Character, model}
-            
-            local rayResult = Workspace:Raycast(origin, data.head.Position - origin, rp)
-            
-            data.head.Wall_Box.Color3 = (not rayResult or rayResult.Instance:IsDescendantOf(model)) 
-                and visibleColor 
-                or hiddenColor
+        local box = data.head and trackedParts[data.head]
+        if box and typeof(box) == "Instance" then
+            pcall(function()
+                local origin = camera.CFrame.Position
+                local rp = RaycastParams.new()
+                rp.FilterType = Enum.RaycastFilterType.Exclude
+                rp.FilterDescendantsInstances = {localPlayer.Character, model}
+                
+                local rayResult = Workspace:Raycast(origin, data.head.Position - origin, rp)
+                
+                box.Color3 = (not rayResult or rayResult.Instance:IsDescendantOf(model)) 
+                    and visibleColor 
+                    or hiddenColor
+            end)
         end
     end
 end)
@@ -268,7 +281,7 @@ function unloadScript()
         cleanupNPC(model)
     end
     
-    print("❌ Script unloaded - Everything cleaned up")
+    pcall(function()
+        if espFolder then espFolder:Destroy() end
+    end)
 end
-
-print("✅ Script ready!")
