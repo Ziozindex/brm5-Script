@@ -11,6 +11,7 @@ local localPlayer = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
 local TARGET_HITBOX_SIZE = Vector3.new(15, 15, 15)   -- Change this number if you want smaller/bigger
+local HITBOX_PART_NAME   = "SilentHitbox"            -- Name of the bypass hitbox part welded to head
 
 local activeNPCs = {}      -- Tracks living NPCs
 local trackedParts = {}    -- For ESP boxes
@@ -60,28 +61,38 @@ local function destroyAllBoxes()
     trackedParts = {}
 end
 
--- ================== HITBOX FUNCTIONS (CLEANED) ==================
+-- ================== HITBOX FUNCTIONS (HEAD BYPASS) ==================
 
-local function applySilentHitbox(root)
-    root.Size = TARGET_HITBOX_SIZE
-    root.Transparency = 1
-    root.CanCollide = true
+-- Bypass method: spawn a separate invisible Part welded to the Head.
+-- This avoids directly resizing native character parts (harder to detect).
+local function applyBypassHitbox(model, head)
+    if model:FindFirstChild(HITBOX_PART_NAME) then return end
+
+    local bp = Instance.new("Part")
+    bp.Name         = HITBOX_PART_NAME
+    bp.Size         = TARGET_HITBOX_SIZE
+    bp.CFrame       = head.CFrame
+    bp.Transparency = 1
+    bp.CanCollide   = false
+    bp.Anchored     = false
+    bp.Parent       = model   -- parent inside the NPC model so damage registers
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0  = head
+    weld.Part1  = bp
+    weld.Parent = bp
 end
 
-local function restoreOriginalSize(data)
-    local root = data.root
-    if root and data.originalSize then
-        root.Size = data.originalSize
-        root.Transparency = 1
-        root.CanCollide = false
-    end
+local function removeBypassHitbox(model)
+    local bp = model:FindFirstChild(HITBOX_PART_NAME)
+    if bp then bp:Destroy() end
 end
 
 local function cleanupNPC(model)
     if not activeNPCs[model] then return end
     local data = activeNPCs[model]
     
-    restoreOriginalSize(data)
+    removeBypassHitbox(model)
     
     -- Remove ESP box
     if data.head and data.head:FindFirstChild("Wall_Box") then
@@ -97,27 +108,21 @@ end
 local function addNPC(model)
     if activeNPCs[model] or model.Name ~= "Male" or not hasAIChild(model) then return end
     
-    local head = model:FindFirstChild("Head")
-    local root = getRootPart(model)
+    local head     = model:FindFirstChild("Head")
     local humanoid = model:FindFirstChildOfClass("Humanoid")
     
-    if not head or not root or not humanoid then return end
+    if not head or not humanoid then return end
     
-    -- Save original size ONCE
-    local originalSize = root.Size
-    
-    -- Apply big hitbox ONCE
-    applySilentHitbox(root)
+    -- Apply bypass hitbox on Head (separate welded part, no native size changes)
+    applyBypassHitbox(model, head)
     
     -- Create ESP
     createBoxForPart(head)
     
     -- Store everything
     activeNPCs[model] = {
-        head = head,
-        root = root,
+        head     = head,
         humanoid = humanoid,
-        originalSize = originalSize
     }
     
     -- Auto clean when NPC dies
@@ -217,9 +222,9 @@ RunService.Heartbeat:Connect(function()
         -- Remove if NPC disappeared or died
         if not model.Parent or (data.humanoid and data.humanoid.Health <= 0) then
             cleanupNPC(model)
-        -- Re-apply hitbox ONLY if game reset it
-        elseif data.root and data.root.Size ~= TARGET_HITBOX_SIZE then
-            applySilentHitbox(data.root)
+        -- Re-apply bypass hitbox ONLY if it was removed (e.g. game cleaned it up)
+        elseif data.head and not model:FindFirstChild(HITBOX_PART_NAME) then
+            applyBypassHitbox(model, data.head)
         end
     end
 end)
