@@ -1,3 +1,4 @@
+
 -- =============================================
 -- NPC ESP + HITBOX + NO RECOIL
 -- =============================================
@@ -11,7 +12,6 @@ local localPlayer = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
 local TARGET_HITBOX_SIZE = Vector3.new(15, 15, 15)   -- Change this number if you want smaller/bigger
-local REAL_HEAD_HIDDEN   = "_Head"                   -- Real Head is renamed to this while bypass is active
 
 local activeNPCs = {}      -- Tracks living NPCs
 local trackedParts = {}    -- For ESP boxes
@@ -61,55 +61,20 @@ local function destroyAllBoxes()
     trackedParts = {}
 end
 
--- ================== HITBOX FUNCTIONS (RENAME-SWAP BYPASS) ==================
+-- ================== HITBOX FUNCTIONS (CLEANED) ==================
 
--- How it works:
---   1. Rename the real Head to "_Head" so only ONE part named "Head" exists in the model.
---   2. Create a big invisible Part named "Head" welded to "_Head".
---   3. The game's raycast hits the big "Head" → hit.Name == "Head" → headshot damage registers.
---   4. On cleanup: destroy the fake "Head", rename "_Head" back to "Head".
---
--- Previous attempts that failed:
---   • Direct head.Size expansion           → instant ban (anti-cheat monitors native part sizes)
---   • Separate part named "SilentHitbox"   → no ban, but hits never registered (wrong name)
---   • Cloned head (two "Head" parts)       → confuses detection; shots hit the tiny original
---   • External Workspace part              → not inside the model; character lookup fails
-
-local function applyBypassHitbox(model, realHead)
-    -- Guard: already applied if the real head is already renamed
-    if realHead.Name == REAL_HEAD_HIDDEN then return end
-
-    -- Step 1: hide the real Head from name lookups
-    realHead.Name = REAL_HEAD_HIDDEN
-
-    -- Step 2: create ONE big part named "Head" so hit.Name == "Head" triggers headshot damage
-    local fakeHead = Instance.new("Part")
-    fakeHead.Name         = "Head"
-    fakeHead.Size         = TARGET_HITBOX_SIZE
-    fakeHead.CFrame       = realHead.CFrame
-    fakeHead.Transparency = 1
-    fakeHead.CanCollide   = false
-    fakeHead.Massless     = true     -- prevents physics mass from being added to the NPC
-    fakeHead.Anchored     = false
-    fakeHead.Parent       = model   -- must be inside the model for damage character lookup
-
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0  = realHead
-    weld.Part1  = fakeHead
-    weld.Parent = fakeHead
+local function applySilentHitbox(root)
+    root.Size = TARGET_HITBOX_SIZE
+    root.Transparency = 1
+    root.CanCollide = true
 end
 
-local function removeBypassHitbox(model, realHead)
-    -- Only act if the bypass is currently applied (real head was renamed)
-    if not realHead or realHead.Name ~= REAL_HEAD_HIDDEN then return end
-
-    -- Destroy the fake "Head" first
-    local fakeHead = model:FindFirstChild("Head")
-    if fakeHead then fakeHead:Destroy() end
-
-    -- Restore the real head's name
-    if realHead.Parent then
-        realHead.Name = "Head"
+local function restoreOriginalSize(data)
+    local root = data.root
+    if root and data.originalSize then
+        root.Size = data.originalSize
+        root.Transparency = 1
+        root.CanCollide = false
     end
 end
 
@@ -117,9 +82,9 @@ local function cleanupNPC(model)
     if not activeNPCs[model] then return end
     local data = activeNPCs[model]
     
-    removeBypassHitbox(model, data.head)
+    restoreOriginalSize(data)
     
-    -- Remove ESP box (head may still be named "_Head" at this point, that's fine)
+    -- Remove ESP box
     if data.head and data.head:FindFirstChild("Wall_Box") then
         pcall(function() data.head.Wall_Box:Destroy() end)
         trackedParts[data.head] = nil
@@ -133,21 +98,27 @@ end
 local function addNPC(model)
     if activeNPCs[model] or model.Name ~= "Male" or not hasAIChild(model) then return end
     
-    local realHead = model:FindFirstChild("Head")   -- grab ref before bypass renames it
+    local head = model:FindFirstChild("Head")
+    local root = getRootPart(model)
     local humanoid = model:FindFirstChildOfClass("Humanoid")
     
-    if not realHead or not humanoid then return end
+    if not head or not root or not humanoid then return end
     
-    -- Apply rename-swap bypass: renames real Head → "_Head", creates big "Head" weld
-    applyBypassHitbox(model, realHead)
+    -- Save original size ONCE
+    local originalSize = root.Size
     
-    -- Create ESP on the real (now "_Head") part — stays accurate to visual head position
-    createBoxForPart(realHead)
+    -- Apply big hitbox ONCE
+    applySilentHitbox(root)
     
-    -- Store realHead reference (valid even after rename; Lua holds the Instance object)
+    -- Create ESP
+    createBoxForPart(head)
+    
+    -- Store everything
     activeNPCs[model] = {
-        head     = realHead,
+        head = head,
+        root = root,
         humanoid = humanoid,
+        originalSize = originalSize
     }
     
     -- Auto clean when NPC dies
@@ -247,13 +218,9 @@ RunService.Heartbeat:Connect(function()
         -- Remove if NPC disappeared or died
         if not model.Parent or (data.humanoid and data.humanoid.Health <= 0) then
             cleanupNPC(model)
-        -- Re-apply bypass hitbox ONLY if the fake "Head" was removed (e.g. game cleaned it up).
-        -- data.head points to the real "_Head" Instance; if it's still in the model we can re-weld.
-        -- Also guard data.head.Name so we don't double-apply if it was externally renamed back.
-        elseif data.head and data.head.Parent == model
-            and data.head.Name == REAL_HEAD_HIDDEN
-            and not model:FindFirstChild("Head") then
-            applyBypassHitbox(model, data.head)
+        -- Re-apply hitbox ONLY if game reset it
+        elseif data.root and data.root.Size ~= TARGET_HITBOX_SIZE then
+            applySilentHitbox(data.root)
         end
     end
 end)
