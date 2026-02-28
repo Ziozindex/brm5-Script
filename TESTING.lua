@@ -183,4 +183,4 @@ function unloadScript()
     print("❌ Script unloaded")
 end
 
-print("✅ Ready! Head now expanded + dropped down to overlap body every 1s")
+print("✅ Ready!")
